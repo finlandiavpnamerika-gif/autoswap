@@ -57,8 +57,7 @@ public class AutoSwapClient implements ClientModInitializer {
     private Pair bindingPair = null;   // пара создана, ждём клавишу для бинда
     private long lastSwap = 0;
     private Path configFile;
-
-    @Override
+        @Override
     public void onInitializeClient() {
         configFile = FabricLoader.getInstance().getConfigDir().resolve("autoswap.txt");
         load();
@@ -107,8 +106,7 @@ public class AutoSwapClient implements ClientModInitializer {
 
         ClientTickEvents.END_CLIENT_TICK.register(this::onTick);
     }
-
-    // ---------- Тик: бинды ----------
+        // ---------- Тик: бинды ----------
 
     private void onTick(MinecraftClient mc) {
         if (mc.player == null || mc.interactionManager == null) return;
@@ -149,8 +147,7 @@ public class AutoSwapClient implements ClientModInitializer {
         }
         msg(mc, "AutoSwap: предметы пары не найдены");
     }
-
-    // ---------- Выбор предметов в инвентаре ----------
+        // ---------- Выбор предметов в инвентаре ----------
 
     private void selectHovered(MinecraftClient mc, InventoryScreen screen) {
         Slot slot = ((HandledScreenAccessor) screen).getFocusedSlot();
@@ -173,4 +170,127 @@ public class AutoSwapClient implements ClientModInitializer {
     private void assignKey(MinecraftClient mc, int key) {
         if (key == GLFW.GLFW_KEY_LEFT_SHIFT || key == GLFW.GLFW_KEY_RIGHT_SHIFT
                 || key == GLFW.GLFW_KEY_LEFT_CONTROL || key == GLFW.GLFW_KEY_RIGHT_CONTROL
-                || key == GLFW.GLFW_KEY_LEFT_ALT || key == GLFW.GLFW_KEY_
+                || key == GLFW.GLFW_KEY_LEFT_ALT || key == GLFW.GLFW_KEY_RIGHT_ALT) {
+            msg(mc, "AutoSwap: Shift/Ctrl/Alt нельзя, нажми другую клавишу");
+            return;
+        }
+        if (KeyBindingHelper.getBoundKeyOf(selectKey).getCode() == key) {
+            msg(mc, "AutoSwap: эта клавиша занята под выбор предметов");
+            return;
+        }
+        for (Pair p : pairs) {
+            if (p.key == key) {
+                msg(mc, "AutoSwap: клавиша уже занята другой парой");
+                return;
+            }
+        }
+        bindingPair.key = key;
+        bindingPair.wasDown = true; // клавиша ещё зажата: не свапаем сразу после назначения
+        pairs.add(bindingPair);
+        save();
+        msg(mc, "AutoSwap: [" + keyName(key) + "] = " + bindingPair.a + " <-> " + bindingPair.b);
+        bindingPair = null;
+    }
+
+    private void removeHovered(MinecraftClient mc, InventoryScreen screen) {
+        Slot slot = ((HandledScreenAccessor) screen).getFocusedSlot();
+        if (slot == null || !slot.hasStack()) return;
+        String name = nameOf(slot.getStack());
+
+        boolean removed = pairs.removeIf(p -> p.a.equalsIgnoreCase(name) || p.b.equalsIgnoreCase(name));
+        if (removed) {
+            save();
+            msg(mc, "AutoSwap: пары с " + name + " удалены");
+        }
+    }
+        // ---------- Интерфейс ----------
+
+    private void drawPanel(DrawContext ctx, MinecraftClient mc) {
+        if (mc.player == null) return;
+        TextRenderer tr = mc.textRenderer;
+
+        ItemStack off = mc.player.getOffHandStack();
+        String cur = off.isEmpty() ? "" : nameOf(off);
+
+        // Считаем размеры панели
+        int width = tr.getWidth("AutoSwap");
+        for (Pair p : pairs) {
+            width = Math.max(width, tr.getWidth("[" + keyName(p.key) + "] " + p.a + " <-> " + p.b));
+        }
+        String status = null;
+        if (bindingPair != null) status = "Нажми клавишу для бинда (Esc - отмена)";
+        else if (firstItem != null) status = "Выбран: " + firstItem + ". Выбери второй предмет";
+        else if (pairs.isEmpty()) status = "В инвентаре: наведи на предмет и нажми " + selectKey.getBoundKeyLocalizedText().getString();
+        if (status != null) width = Math.max(width, tr.getWidth(status));
+
+        int lines = 1 + pairs.size() + (status != null ? 1 : 0);
+        int x = 6, y = 6, lh = 11;
+        ctx.fill(x - 3, y - 3, x + width + 3, y + lines * lh + 1, 0x90000000);
+
+        ctx.drawTextWithShadow(tr, "AutoSwap", x, y, YELLOW);
+        y += lh;
+
+        for (Pair p : pairs) {
+            int cx = x;
+            String key = "[" + keyName(p.key) + "] ";
+            ctx.drawTextWithShadow(tr, key, cx, y, GRAY);
+            cx += tr.getWidth(key);
+
+            ctx.drawTextWithShadow(tr, p.a, cx, y, p.a.equalsIgnoreCase(cur) ? GREEN : WHITE);
+            cx += tr.getWidth(p.a);
+
+            ctx.drawTextWithShadow(tr, " <-> ", cx, y, GRAY);
+            cx += tr.getWidth(" <-> ");
+
+            ctx.drawTextWithShadow(tr, p.b, cx, y, p.b.equalsIgnoreCase(cur) ? GREEN : WHITE);
+            y += lh;
+        }
+
+        if (status != null) ctx.drawTextWithShadow(tr, status, x, y, GRAY);
+    }
+        // ---------- Утилиты ----------
+
+    // Слоты PlayerScreenHandler: хотбар 36-44, инвентарь 9-35
+    private int findSlotId(MinecraftClient mc, String name) {
+        for (int i = 0; i < 36; i++) {
+            ItemStack stack = mc.player.getInventory().getStack(i);
+            if (!stack.isEmpty() && nameOf(stack).equalsIgnoreCase(name)) {
+                return i < 9 ? 36 + i : i;
+            }
+        }
+        return -1;
+    }
+
+    private String keyName(int key) {
+        return InputUtil.fromKeyCode(key, -1).getLocalizedText().getString();
+    }
+
+    private String nameOf(ItemStack stack) {
+        return stack.getName().getString().trim();
+    }
+
+    private void msg(MinecraftClient mc, String text) {
+        if (mc.player != null) mc.player.sendMessage(Text.literal(text), true);
+    }
+
+    // Формат файла: клавиша<TAB>предмет A<TAB>предмет B
+    private void load() {
+        try {
+            if (!Files.exists(configFile)) return;
+            for (String line : Files.readAllLines(configFile, StandardCharsets.UTF_8)) {
+                String[] parts = line.split("\t");
+                if (parts.length == 3) {
+                    pairs.add(new Pair(parts[1], parts[2], Integer.parseInt(parts[0])));
+                }
+            }
+        } catch (IOException | NumberFormatException ignored) {}
+    }
+
+    private void save() {
+        List<String> lines = new ArrayList<>();
+        for (Pair p : pairs) lines.add(p.key + "\t" + p.a + "\t" + p.b);
+        try {
+            Files.write(configFile, lines, StandardCharsets.UTF_8);
+        } catch (IOException ignored) {}
+    }
+}
